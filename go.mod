@@ -4,7 +4,7 @@ go 1.24
 
 require (
 	github.com/TobiasYin/go-lsp v0.0.0-20250321092325-c349c1be0340
-	github.com/quantonganh/tree-sitter-hdl v0.0.0-20250803014601-7d0418fd7147
+	github.com/quantonganh/tree-sitter-hdl v0.0.0-20250812071859-293902330423
 	github.com/tree-sitter/go-tree-sitter v0.24.0
 )
 
