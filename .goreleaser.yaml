@@ -1,56 +1,68 @@
-# This is an example .goreleaser.yml file with some sensible defaults.
-# Make sure to check the documentation at https://goreleaser.com
 version: 2
-before:
-  hooks:
-    # You may remove this if you don't use go modules.
-    - go mod tidy
+
 builds:
-  - env:
+  - id: darwin-amd64
+    binary: hdls
+    goos: [ darwin ]
+    goarch: [ amd64 ]
+    env:
       - CGO_ENABLED=1
-    goos:
-      - linux
-      - windows
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-    flags:
-      - -v
-      - -trimpath
-    ldflags:
-      - -s
-      - -w
+      - CC=o64-clang
+
+  - id: darwin-arm64
+    binary: hdls
+    goos: [ darwin ]
+    goarch: [ arm64 ]
+    env:
+      - CGO_ENABLED=1
+      - CC=oa64-clang
+
+  - id: linux-amd64
+    binary: hdls
+    goos: [ linux ]
+    goarch: [ amd64 ]
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-linux-gnu-gcc
+
+  - id: linux-arm64
+    binary: hdls
+    goos: [ linux ]
+    goarch: [ arm64 ]
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+
+  - id: windows-amd64
+    binary: hdls
+    goos: [ windows ]
+    goarch: [ amd64 ]
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-w64-mingw32-gcc
 
 archives:
-  - format: tar.gz
-    # this name template makes the OS and Arch compatible with the results of uname.
-    name_template: >-
-      {{ .ProjectName }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else if eq .Arch "386" }}i386
-      {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
-    # use zip for windows archives
+  - id: release-archive
+    builds:
+      - darwin-amd64
+      - darwin-arm64
+      - linux-amd64
+      - linux-arm64
+      - windows-amd64
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
-    - goos: windows
-      format: zip
+      - goos: windows
+        format: zip
+
 checksum:
   name_template: 'checksums.txt'
+
 snapshot:
   name_template: "{{ incpatch .Version }}-next"
+
 changelog:
   sort: asc
-  filters:
-    exclude:
-      - '^docs:'
-      - '^test:'
-
-# The lines beneath this are called `modelines`. See `:help modeline`
-# Feel free to remove those if you don't want/use them.
-# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
-# vim: set ts=2 sw=2 tw=0 fo=cnqoj
 
 brews:
   - repository:
