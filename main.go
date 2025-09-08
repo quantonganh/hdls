@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -16,6 +17,13 @@ import (
 	"github.com/TobiasYin/go-lsp/lsp/defines"
 	tree_sitter_hdl "github.com/quantonganh/tree-sitter-hdl/bindings/go"
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+)
+
+const (
+	ext = ".hdl"
+
+	nodeKindChipDefinition = "chip_definition"
+	nodeKindPart           = "part"
 )
 
 func main() {
@@ -42,32 +50,43 @@ func main() {
 		return nil
 	})
 
-	primitiveChips := make(map[string]struct{})
+	implementedChips := make(map[string]struct{})
 	openFiles := make(map[string][]byte)
 
 	publishDiagnostics := func(source []byte, uri defines.DocumentUri, version int) error {
 		tree := parser.Parse(source, nil)
 		defer tree.Close()
 
-		var compositeChipName string
+		var implementingChipName string
 		var walk func(n *tree_sitter.Node)
 		diagnostics := make([]defines.Diagnostic, 0)
 		walk = func(n *tree_sitter.Node) {
 			switch strings.TrimSpace(n.Kind()) {
-			case "chip_definition":
+			case nodeKindChipDefinition:
 				if name := n.ChildByFieldName("name"); name != nil {
-					compositeChipName = string(source[name.StartByte():name.EndByte()])
+					implementingChipName = string(source[name.StartByte():name.EndByte()])
 				}
-			case "part":
+			case nodeKindPart:
 				if name := n.ChildByFieldName("chip_name"); name != nil {
-					primitive := string(source[name.StartByte():name.EndByte()])
+					chipName := string(source[name.StartByte():name.EndByte()])
 
-					if primitive == compositeChipName {
-						diagnostics = append(diagnostics, newDiagnostic(name, fmt.Sprintf("Cannot use chip %s to implement itself", primitive)))
+					if chipName == implementingChipName {
+						diagnostics = append(diagnostics, newDiagnostic(name, fmt.Sprintf("Cannot use chip %s to implement itself", chipName)))
 					}
 
-					if _, ok := primitiveChips[primitive]; !ok {
-						diagnostics = append(diagnostics, newDiagnostic(name, fmt.Sprintf("Undefined chip name: %s", primitive)))
+					if _, ok := implementedChips[chipName]; !ok {
+						diagnostics = append(diagnostics, newDiagnostic(name, fmt.Sprintf("Undefined chip name: %s", chipName)))
+					}
+				}
+
+				for i := 0; i < int(n.ChildCount()); i++ {
+					child := n.Child(uint(i))
+					if child.IsError() {
+						childText := string(source[child.StartByte():child.EndByte()])
+						if strings.HasPrefix(strings.TrimSpace(childText), ")") {
+							diagnostics = append(diagnostics, newDiagnostic(child.Child(1), "Expected \";\""))
+						}
+						break
 					}
 				}
 			}
@@ -101,11 +120,11 @@ func main() {
 		source := []byte(req.TextDocument.Text)
 		openFiles[uri] = source
 
-		if err := collectPrimitiveChips(builtInChipsDir(uri), primitiveChips); err != nil {
+		if err := collectChips(builtInChipsDir(uri), implementedChips); err != nil {
 			return fmt.Errorf("collect primitive builtin chips: %w", err)
 		}
 
-		if err := collectPrimitiveChips(filepath.Dir(toFilePath(uri)), primitiveChips); err != nil {
+		if err := collectChips(baseDir(uri), implementedChips); err != nil {
 			return fmt.Errorf("collect implemented chips: %w", err)
 		}
 
@@ -127,26 +146,76 @@ func main() {
 	})
 
 	server.OnDefinition(func(ctx context.Context, req *defines.DefinitionParams) (result *[]defines.LocationLink, err error) {
-		source, err := readFile(string(req.TextDocument.Uri))
+		uri := string(req.TextDocument.Uri)
+		source, err := readFile(uri)
 		if err != nil {
 			return nil, err
 		}
 
 		offset := getByteOffset(string(source), int(req.Position.Line), int(req.Position.Character))
-		log.Printf("offset: %d", offset)
 
 		tree := parser.Parse(source, nil)
 		defer tree.Close()
 
 		node := tree.RootNode().DescendantForByteRange(uint(offset), uint(offset)).Parent()
-		log.Printf("kind: %s", node.Kind())
-		if strings.TrimSuffix(node.Kind(), "\n") == "part" {
+		if strings.TrimSuffix(node.Kind(), "\n") == nodeKindPart {
 			if name := node.ChildByFieldName("chip_name"); name != nil {
 				primitiveChipName := string(source[name.StartByte():name.EndByte()])
-				targetPath := filepath.Join(builtInChipsDir(string(req.TextDocument.Uri)), primitiveChipName+".hdl")
+				fileName := primitiveChipName + ext
+				var targetUri string
+				path := filepath.Join(baseDir(uri), fileName)
+				_, err := os.Stat(path)
+				if errors.Is(err, os.ErrNotExist) {
+					targetUri = filepath.Join(builtInChipsDir(uri), fileName)
+				} else {
+					targetUri = path
+				}
+
+				targetSource, err := readFile(targetUri)
+				if err != nil {
+					return nil, err
+				}
+
+				targetTree := parser.Parse(targetSource, nil)
+				defer targetTree.Close()
+
+				var (
+					walk          func(n *tree_sitter.Node)
+					startPosition tree_sitter.Point
+					endPosition   tree_sitter.Point
+				)
+				walk = func(n *tree_sitter.Node) {
+					switch strings.TrimSpace(n.Kind()) {
+					case nodeKindChipDefinition:
+						if name := n.ChildByFieldName("name"); name != nil {
+							startPosition = name.StartPosition()
+							endPosition = name.EndPosition()
+
+						}
+					}
+
+					for i := 0; i < int(n.NamedChildCount()); i++ {
+						walk(n.NamedChild(uint(i)))
+					}
+				}
+
+				walk(tree.RootNode())
+
+				targetRange := defines.Range{
+					Start: defines.Position{
+						Line:      startPosition.Row,
+						Character: startPosition.Column,
+					},
+					End: defines.Position{
+						Line:      endPosition.Row,
+						Character: endPosition.Column,
+					},
+				}
 				result := &[]defines.LocationLink{
 					{
-						TargetUri: defines.DocumentUri("file://" + targetPath),
+						TargetUri:            defines.DocumentUri("file://" + targetUri),
+						TargetRange:          targetRange,
+						TargetSelectionRange: targetRange,
 					},
 				}
 				return result, nil
@@ -167,14 +236,14 @@ func readFile(uri string) ([]byte, error) {
 	return source, nil
 }
 
-func collectPrimitiveChips(dir string, chips map[string]struct{}) error {
+func collectChips(dir string, chips map[string]struct{}) error {
 	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if !d.IsDir() && filepath.Ext(path) == ".hdl" {
-			chip := strings.TrimSuffix(filepath.Base(path), ".hdl")
+		if !d.IsDir() && filepath.Ext(path) == ext {
+			chip := strings.TrimSuffix(filepath.Base(path), ext)
 			chips[chip] = struct{}{}
 		}
 		return nil
@@ -183,11 +252,6 @@ func collectPrimitiveChips(dir string, chips map[string]struct{}) error {
 	}
 
 	return nil
-}
-
-func toFilePath(uri string) string {
-	enEscapeUrl, _ := url.QueryUnescape(strings.TrimSpace(uri))
-	return strings.TrimPrefix(enEscapeUrl, "file:")
 }
 
 func getByteOffset(text string, line, char int) int {
@@ -206,9 +270,18 @@ func getByteOffset(text string, line, char int) int {
 }
 
 func builtInChipsDir(uri string) string {
-	baseDir := filepath.Join(filepath.Dir(toFilePath(uri)), "..", "..")
+	baseDir := filepath.Join(baseDir(uri), "..", "..")
 	baseDir = filepath.Clean(baseDir)
 	return filepath.Join(baseDir, "tools", "builtInChips")
+}
+
+func baseDir(uri string) string {
+	return filepath.Dir(toFilePath(uri))
+}
+
+func toFilePath(uri string) string {
+	enEscapeUrl, _ := url.QueryUnescape(strings.TrimSpace(uri))
+	return strings.TrimPrefix(enEscapeUrl, "file:")
 }
 
 func newDiagnostic(n *tree_sitter.Node, msg string) defines.Diagnostic {
