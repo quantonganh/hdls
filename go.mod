@@ -1,6 +1,6 @@
 module github.com/quantonganh/hdls
 
-go 1.24
+go 1.25
 
 require (
 	github.com/TobiasYin/go-lsp v0.0.0-20250321092325-c349c1be0340

@@ -1,0 +1,30 @@
+name: goreleaser
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: setup release environment
+        run: |-
+          echo 'GITHUB_TOKEN=${{secrets.GH_PAT}}' > .release-env
+
+      - name: release dry run
+        run: make release-dry-run
+
+      - name: release publish
+        run: make release
