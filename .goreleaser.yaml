@@ -56,7 +56,7 @@ brews:
   - repository:
       owner: quantonganh
       name: homebrew-tap
-    folder: Formula
+    directory: Formula
     homepage: https://github.com/quantonganh/hdls
     description: >-
       A simple language server for HDL (nand2tetris)
